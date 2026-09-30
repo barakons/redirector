@@ -141,3 +141,12 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# redirector: sqlite runtime db
+data.db*
+*.db-journal
+*.db-shm
+*.db-wal
+
+# redirector has zero deps; no lockfile needed
+package-lock.json

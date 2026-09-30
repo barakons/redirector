@@ -1,0 +1,13 @@
+{
+  "name": "redirector",
+  "version": "1.0.0",
+  "description": "Lite link redirector with admin auth, user + link management, SQLite storage",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
