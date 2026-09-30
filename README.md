@@ -46,6 +46,7 @@ Open http://localhost:3000, login at http://localhost:3000/admin/login.
 ## Notes
 
 - Labels: auto-slugged to `[a-z0-9-]{1,64}`; reserved words (`admin`, `login`, `logout`, `healthz`, `api`, `static`, …) blocked.
+- Labels are unique (DB `UNIQUE` + explicit pre-check): reusing one shows `Label "/x" is already used → <target>`, and the form warns live (✓ available / ⚠ already used) as you type.
 - QR: vendored `qrcode.min.js` (davidshimjs qrcodejs, MIT), served locally at `/qrcode.min.js` — no CDN needed.
 - URLs must start with `http://` or `https://`.
 - Guards: can't delete/demote yourself, can't remove the last admin.

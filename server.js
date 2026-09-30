@@ -173,6 +173,15 @@ function slugify(s) {
 function validLabel(l) {
   return RE_LABEL.test(l || "") && !RESERVED.has(l);
 }
+// existing link with this label, optionally excluding one id (edit form)
+function labelTaken(label, excludeId) {
+  return excludeId
+    ? db.prepare("SELECT label, url FROM links WHERE label = ? AND id != ?").get(label, excludeId)
+    : db.prepare("SELECT label, url FROM links WHERE label = ?").get(label);
+}
+function takenMsg(t) {
+  return `Label "/${t.label || ""}" is already used → ${t.url || ""}`;
+}
 function validUrl(u) {
   if (!u || u.length > 2048) return false;
   try {
@@ -196,6 +205,7 @@ button,.btn{background:#111;color:#fff;border:0;border-radius:8px;padding:8px 14
 button.danger{background:#b91c1c}button.secondary,.btn.secondary{background:#e5e7eb;color:#111}
 .row{display:flex;gap:8px;flex-wrap:wrap}.row>*{flex:1;min-width:160px}
 .actions{display:flex;gap:6px}.muted{color:#666;font-size:13px}.error{background:#fee2e2;color:#991b1b;padding:10px;border-radius:8px}.ok{background:#dcfce7;color:#166534;padding:10px;border-radius:8px}
+#label-warn.error,#label-warn.ok{display:block;margin-top:4px;font-size:13px;padding:6px 10px}
 code{background:#eee;padding:2px 6px;border-radius:6px}
 `;
 
@@ -233,14 +243,14 @@ function linksPage(user, { links, editLink, error, msg, owners }) {
   const form = editLink ? `
 <h3>Edit /${esc(editLink.label)}</h3>
 <form method="POST" action="/admin/links/update"><input type="hidden" name="csrf" value="${esc(user.csrf)}"><input type="hidden" name="id" value="${editLink.id}">
-<div class="row"><p><label>Label (auto-slugged, e.g. My Cool Link → my-cool-link)<br><input name="label" value="${esc(editLink.label)}" required maxlength="64" oninput="document.getElementById('slug-prev').textContent=this.value.trim()?('→ /'+slugPrev(this.value)):''"></label><span class="muted" id="slug-prev"></span></p>
+<div class="row"><p><label>Label (auto-slugged, e.g. My Cool Link → my-cool-link)<br><input name="label" value="${esc(editLink.label)}" required maxlength="64" oninput="onLabelInput(this)"></label><span class="muted" id="slug-prev"></span><span id="label-warn"></span></p>
 <p><label>URL for redirection<br><input name="url" value="${esc(editLink.url)}" required placeholder="https://..."></label></p></div>
 <p><label>Notes<br><input name="notes" value="${esc(editLink.notes)}"></label></p>
 <p><button type="submit">Save</button> <a class="btn secondary" href="/admin/links">cancel</a></p></form>`
     : `
 <h3>New link</h3>
 <form method="POST" action="/admin/links/create"><input type="hidden" name="csrf" value="${esc(user.csrf)}">
-<div class="row"><p><label>Label (auto-slugged, e.g. My Cool Link → my-cool-link)<br><input name="label" required maxlength="64" placeholder="my cool link" oninput="document.getElementById('slug-prev').textContent=this.value.trim()?('→ /'+slugPrev(this.value)):''"></label><span class="muted" id="slug-prev"></span></p>
+<div class="row"><p><label>Label (auto-slugged, e.g. My Cool Link → my-cool-link)<br><input name="label" required maxlength="64" placeholder="my cool link" oninput="onLabelInput(this)"></label><span class="muted" id="slug-prev"></span><span id="label-warn"></span></p>
 <p><label>URL for redirection<br><input name="url" required placeholder="https://example.com/..."></label></p></div>
 <p><label>Notes<br><input name="notes" placeholder="optional"></label></p>
 <p><button type="submit">Create</button></p></form>`;
@@ -257,7 +267,25 @@ ${error ? `<p class="error">${esc(error)}</p>` : ""}${msg ? `<p class="ok">${esc
 <p><button type="button" id="qr-dl">Download PNG</button> <button type="button" class="secondary" onclick="closeQR()">close</button></p></div></div>
 <script src="/qrcode.min.js"></script>
 <script>
+var EDIT_ID='${editLink ? editLink.id : ""}';
 function slugPrev(s){return s.trim().toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,64);}
+var labelTimer=null;
+function onLabelInput(el){
+  var slug=slugPrev(el.value);
+  document.getElementById('slug-prev').textContent=el.value.trim()?('→ /'+slug):'';
+  var warn=document.getElementById('label-warn');
+  clearTimeout(labelTimer);
+  if(!slug){warn.textContent='';warn.className='';return;}
+  labelTimer=setTimeout(function(){
+    fetch('/admin/links/check?label='+encodeURIComponent(slug)+'&exclude='+encodeURIComponent(EDIT_ID))
+      .then(function(r){return r.json();})
+      .then(function(d){
+        if(d.reserved){warn.textContent='⚠ /'+d.label+' is reserved';warn.className='error';}
+        else if(!d.available){warn.textContent='⚠ /'+d.label+' is already used → '+d.url;warn.className='error';}
+        else{warn.textContent='✓ /'+d.label+' is available';warn.className='ok';}
+      }).catch(function(){warn.textContent='';warn.className='';});
+  },300);
+}
 function showQR(label){
   var full=location.origin+'/'+label;
   document.getElementById('qr-label').textContent='/'+label;
@@ -386,6 +414,28 @@ const server = http.createServer(async (req, res) => {
     const checkCsrf = (params) => params.get("csrf") === auth.session.csrf_token;
 
     // ---- links ----
+    // live availability check for the label warning (requires login via guard above)
+    if (path === "/admin/links/check" && method === "GET") {
+      const label = slugify(url.searchParams.get("label"));
+      const exclude = url.searchParams.get("exclude") || null;
+      if (!label) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ label: "", available: false, reserved: false }));
+        return;
+      }
+      if (!validLabel(label)) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ label, available: false, reserved: true }));
+        return;
+      }
+      const taken = labelTaken(label, exclude);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(taken
+        ? { label, available: false, reserved: false, url: taken.url }
+        : { label, available: true, reserved: false }));
+      return;
+    }
+
     if (path === "/admin/links" && method === "GET") {
       const params = url.searchParams;
       const links = user.role === "admin"
@@ -410,11 +460,14 @@ const server = http.createServer(async (req, res) => {
       if (!label) { redir(res, "/admin/links?error=" + encodeURIComponent("Label is empty after slugifying — use letters/numbers")); return; }
       if (!validLabel(label)) { redir(res, "/admin/links?error=" + encodeURIComponent(`Label "/${label}" is reserved`)); return; }
       if (!validUrl(target)) { redir(res, "/admin/links?error=" + encodeURIComponent("Invalid URL (must start with http:// or https://)")); return; }
+      const clash = labelTaken(label, null);
+      if (clash) { redir(res, "/admin/links?error=" + encodeURIComponent(takenMsg(clash))); return; }
       try {
         db.prepare("INSERT INTO links (label, url, notes, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
           .run(label, target, notes, user.id, nowIso(), nowIso());
       } catch (e) {
-        redir(res, "/admin/links?error=" + encodeURIComponent("Label already taken")); return;
+        const retry = labelTaken(label, null);
+        redir(res, "/admin/links?error=" + encodeURIComponent(retry ? takenMsg(retry) : `Label "/${label}" is already used`)); return;
       }
       redir(res, "/admin/links?msg=" + encodeURIComponent(`Created /${label}`)); return;
     }
@@ -431,11 +484,14 @@ const server = http.createServer(async (req, res) => {
       if (!label) { redir(res, "/admin/links?error=" + encodeURIComponent("Label is empty after slugifying — use letters/numbers")); return; }
       if (!validLabel(label)) { redir(res, "/admin/links?error=" + encodeURIComponent(`Label "/${label}" is reserved`)); return; }
       if (!validUrl(target)) { redir(res, "/admin/links?error=" + encodeURIComponent("Invalid URL")); return; }
+      const clash = labelTaken(label, link.id);
+      if (clash) { redir(res, `/admin/links?edit=${link.id}&error=` + encodeURIComponent(takenMsg(clash))); return; }
       try {
         db.prepare("UPDATE links SET label = ?, url = ?, notes = ?, updated_at = ? WHERE id = ?")
           .run(label, target, notes, nowIso(), link.id);
       } catch {
-        redir(res, "/admin/links?error=" + encodeURIComponent("Label already taken")); return;
+        const retry = labelTaken(label, link.id);
+        redir(res, `/admin/links?edit=${link.id}&error=` + encodeURIComponent(retry ? takenMsg(retry) : `Label "/${label}" is already used`)); return;
       }
       redir(res, "/admin/links?msg=" + encodeURIComponent("Link updated")); return;
     }
