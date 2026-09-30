@@ -21,6 +21,18 @@ node server.js
 npm start
 ```
 
+## Run with PM2 (port 3461)
+
+`ecosystem.config.cjs` runs the app on port **3461**:
+
+```bash
+pm2 start ecosystem.config.cjs
+pm2 save
+pm2 startup   # optional: resurrect on reboot
+```
+
+Useful commands: `pm2 logs redirector`, `pm2 restart redirector`, `pm2 stop redirector`.
+
 Env:
 
 | var | default | desc |
