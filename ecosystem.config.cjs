@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: "redirector",
+      name: "redirector-go-cuplix",
       script: "server.js",
       instances: 1,
       exec_mode: "fork",
